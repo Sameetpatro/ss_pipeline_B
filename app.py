@@ -10,9 +10,7 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 
 from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-from IndicTransToolkit import IndicProcessor
 from gtts import gTTS
-
 from indic_transliteration.sanscript import transliterate
 
 # --------------------------------------------------
@@ -20,8 +18,6 @@ from indic_transliteration.sanscript import transliterate
 # --------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-HF_TOKEN = os.environ.get("HUGGINGFACE_HUB_TOKEN")
 
 # --------------------------------------------------
 # Flask App
@@ -48,20 +44,21 @@ logger.info(f"Using device: {device}")
 # Globals
 # --------------------------------------------------
 whisper_model = None
-translation_models = {}
+nllb_model = None
+nllb_tokenizer = None
 whisper_lock = threading.Lock()
 
 # --------------------------------------------------
-# Language maps (UPDATED)
+# Language maps (FINAL, CORRECT)
 # --------------------------------------------------
-INDIC_LANG_MAP = {
+NLLB_LANG_MAP = {
     "en": "eng_Latn",
     "hi": "hin_Deva",
     "bn": "ben_Beng",
-    "mr": "mar_Deva",   
+    "mr": "mar_Deva",
     "od": "ory_Orya",
-    "ta": "tel_Telu",
-    "te": "tam_Taml",
+    "ta": "tam_Taml",   # Tamil
+    "te": "tel_Telu",   # Telugu
     "kn": "kan_Knda",
     "ml": "mal_Mlym",
     "gu": "guj_Gujr",
@@ -109,11 +106,11 @@ def convert_to_wav_mono_16k(src):
 # --------------------------------------------------
 def load_whisper_model():
     global whisper_model
-    logger.info("Loading Whisper small...")
+    logger.info("Loading Whisper medium...")
 
     whisper_model = pipeline(
         task="automatic-speech-recognition",
-        model="openai/whisper-small",
+        model="openai/whisper-medium",
         device=0 if device == "cuda" else -1,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         model_kwargs={"low_cpu_mem_usage": True},
@@ -130,64 +127,54 @@ def transcribe_audio(path):
     return result["text"].strip()
 
 # --------------------------------------------------
-# IndicTrans2 Translation
+# NLLB Translation
 # --------------------------------------------------
-def get_translation_model(src, tgt):
-    key = f"{src}-{tgt}"
-    if key in translation_models:
-        return translation_models[key]
+def load_nllb_model():
+    global nllb_model, nllb_tokenizer
+    logger.info("Loading NLLB-200 distilled model...")
 
-    if src == "en":
-        model_name = "ai4bharat/indictrans2-en-indic-dist-200M"
-    elif tgt == "en":
-        model_name = "ai4bharat/indictrans2-indic-en-dist-320M"
-    else:
-        model_name = "ai4bharat/indictrans2-indic-indic-dist-320M"
+    model_name = "facebook/nllb-200-distilled-600M"
 
-    logger.info(f"Loading IndicTrans2: {model_name}")
-
-    tokenizer = AutoTokenizer.from_pretrained(
+    nllb_tokenizer = AutoTokenizer.from_pretrained(model_name)
+    nllb_model = AutoModelForSeq2SeqLM.from_pretrained(
         model_name,
-        token=HF_TOKEN,
-        trust_remote_code=True,
-    )
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_name,
-        token=HF_TOKEN,
-        trust_remote_code=True,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
     )
 
     if device == "cuda":
-        model = model.to(device)
+        nllb_model = nllb_model.to(device)
 
-    model.eval()
-    processor = IndicProcessor(inference=True)
-
-    translation_models[key] = (model, tokenizer, processor)
-    return model, tokenizer, processor
+    nllb_model.eval()
+    logger.info("NLLB ready")
 
 
 def translate_text(text, src, tgt):
-    model, tokenizer, processor = get_translation_model(src, tgt)
+    src_lang = NLLB_LANG_MAP[src]
+    tgt_lang = NLLB_LANG_MAP[tgt]
 
-    batch = processor.preprocess_batch(
-        [text],
-        src_lang=INDIC_LANG_MAP[src],
-        tgt_lang=INDIC_LANG_MAP[tgt],
+    nllb_tokenizer.src_lang = src_lang
+
+    inputs = nllb_tokenizer(
+        text,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
     )
-
-    inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True)
 
     if device == "cuda":
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_length=256, num_beams=5)
+    forced_bos_token_id = nllb_tokenizer.convert_tokens_to_ids(tgt_lang)
 
-    decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-    return processor.postprocess_batch(decoded, lang=INDIC_LANG_MAP[tgt])[0]
+    with torch.no_grad():
+        outputs = nllb_model.generate(
+            **inputs,
+            forced_bos_token_id=forced_bos_token_id,
+            max_length=256,
+            num_beams=5,
+        )
+
+    return nllb_tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
 # --------------------------------------------------
 # Odia Romanization
@@ -202,19 +189,16 @@ def odia_to_roman(text):
     return roman
 
 # --------------------------------------------------
-# TTS (gTTS)
+# TTS
 # --------------------------------------------------
 def generate_speech(text, lang, out_path):
     if lang in GTTS_LANG_MAP:
-        tts = gTTS(text=text, lang=GTTS_LANG_MAP[lang])
-        tts.save(out_path)
+        gTTS(text=text, lang=GTTS_LANG_MAP[lang]).save(out_path)
         return out_path
 
     if lang == "od":
         roman = odia_to_roman(text)
-        logger.info(f"Odia Romanized: {roman}")
-        tts = gTTS(text=roman, lang="en")
-        tts.save(out_path)
+        gTTS(text=roman, lang="en").save(out_path)
         return out_path
 
     raise ValueError("Unsupported TTS language")
@@ -234,7 +218,7 @@ def translate_api():
         src = request.form.get("input_lang")
         tgt = request.form.get("target_lang")
 
-        if src not in INDIC_LANG_MAP or tgt not in INDIC_LANG_MAP:
+        if src not in NLLB_LANG_MAP or tgt not in NLLB_LANG_MAP:
             return jsonify({"error": "Unsupported language"}), 400
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -274,4 +258,5 @@ def serve_audio(name):
 # --------------------------------------------------
 if __name__ == "__main__":
     load_whisper_model()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    load_nllb_model()
+    app.run(host="0.0.0.0", port=8000, debug=False)
