@@ -58,15 +58,25 @@ INDIC_LANG_MAP = {
     "en": "eng_Latn",
     "hi": "hin_Deva",
     "bn": "ben_Beng",
-    "mr": "mar_Deva",   # ✅ Marathi added
+    "mr": "mar_Deva",   
     "od": "ory_Orya",
+    "ta": "tel_Telu",
+    "te": "tam_Taml",
+    "kn": "kan_Knda",
+    "ml": "mal_Mlym",
+    "gu": "guj_Gujr",
 }
 
 GTTS_LANG_MAP = {
     "en": "en",
     "hi": "hi",
     "bn": "bn",
-    "mr": "mr",         # ✅ Marathi added
+    "mr": "mr",
+    "ta": "ta",
+    "te": "te",
+    "kn": "kn",
+    "ml": "ml",
+    "gu": "gu",
 }
 
 # --------------------------------------------------
