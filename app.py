@@ -260,3 +260,258 @@ if __name__ == "__main__":
     load_whisper_model()
     load_nllb_model()
     app.run(host="0.0.0.0", port=8000, debug=False)
+
+
+
+# Powerful model for better quality 
+# Uncomment and use it below instead of above code
+
+
+# from flask import Flask, request, jsonify, send_file
+# import os
+# import torch
+# import threading
+# import subprocess
+# import shlex
+# import traceback
+# import logging
+# from datetime import datetime
+# from werkzeug.utils import secure_filename
+
+# from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+# from TTS.api import TTS
+
+# # --------------------------------------------------
+# # Logging
+# # --------------------------------------------------
+# logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+
+# # --------------------------------------------------
+# # Flask App
+# # --------------------------------------------------
+# app = Flask(__name__)
+
+# # --------------------------------------------------
+# # Paths
+# # --------------------------------------------------
+# UPLOAD_FOLDER = "uploads"
+# GENERATED_AUDIO_FOLDER = "generated_audio"
+# os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# os.makedirs(GENERATED_AUDIO_FOLDER, exist_ok=True)
+
+# ALLOWED_EXTENSIONS = {"mp3", "wav", "ogg", "m4a", "flac"}
+
+# # --------------------------------------------------
+# # Device
+# # --------------------------------------------------
+# device = "cuda" if torch.cuda.is_available() else "cpu"
+# logger.info(f"Using device: {device}")
+
+# # --------------------------------------------------
+# # Globals
+# # --------------------------------------------------
+# whisper_model = None
+# nllb_model = None
+# nllb_tokenizer = None
+# tts_model = None
+
+# whisper_lock = threading.Lock()
+
+# # --------------------------------------------------
+# # Language maps (FINAL)
+# # --------------------------------------------------
+# NLLB_LANG_MAP = {
+#     "en": "eng_Latn",
+#     "hi": "hin_Deva",
+#     "bn": "ben_Beng",
+#     "mr": "mar_Deva",
+#     "ta": "tam_Taml",
+#     "te": "tel_Telu",
+#     "kn": "kan_Knda",
+#     "ml": "mal_Mlym",
+#     "gu": "guj_Gujr",
+# }
+
+# XTTS_LANGS = {"hi", "bn", "mr", "ta", "te", "kn", "ml", "gu"}
+
+# # --------------------------------------------------
+# # Utilities
+# # --------------------------------------------------
+# def allowed_file(filename):
+#     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# def convert_to_wav_mono_16k(src):
+#     base = os.path.splitext(os.path.basename(src))[0]
+#     out = os.path.join(UPLOAD_FOLDER, f"{base}_16k.wav")
+
+#     cmd = f'ffmpeg -y -i "{src}" -ac 1 -ar 16000 -acodec pcm_s16le "{out}"'
+#     subprocess.run(shlex.split(cmd), check=True)
+#     return out
+
+# # --------------------------------------------------
+# # Whisper ASR (FORCED ENGLISH TRANSLATION)
+# # --------------------------------------------------
+# def load_whisper_model():
+#     global whisper_model
+#     logger.info("Loading Whisper Large v3...")
+
+#     whisper_model = pipeline(
+#         "automatic-speech-recognition",
+#         model="openai/whisper-large-v3",
+#         device=0 if device == "cuda" else -1,
+#         generate_kwargs={
+#             "task": "translate",
+#             "language": "en"
+#         },
+#         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+#     )
+
+#     whisper_model.model.eval()
+#     torch.set_grad_enabled(False)
+#     logger.info("Whisper ready")
+
+
+# def transcribe_audio(path):
+#     with whisper_lock:
+#         result = whisper_model(path)
+#     return result["text"].strip()
+
+# # --------------------------------------------------
+# # NLLB Translation
+# # --------------------------------------------------
+# def load_nllb_model():
+#     global nllb_model, nllb_tokenizer
+#     logger.info("Loading NLLB-200 (600M)...")
+
+#     model_name = "facebook/nllb-200-distilled-600M"
+
+#     nllb_tokenizer = AutoTokenizer.from_pretrained(model_name)
+#     nllb_model = AutoModelForSeq2SeqLM.from_pretrained(
+#         model_name,
+#         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+#     )
+
+#     if device == "cuda":
+#         nllb_model = nllb_model.to(device)
+
+#     nllb_model.eval()
+#     logger.info("NLLB ready")
+
+
+# def translate_text(text, src, tgt):
+#     if src == tgt:
+#         return text
+
+#     nllb_tokenizer.src_lang = NLLB_LANG_MAP[src]
+
+#     inputs = nllb_tokenizer(
+#         text,
+#         return_tensors="pt",
+#         truncation=True,
+#         max_length=256
+#     )
+
+#     if device == "cuda":
+#         inputs = {k: v.to(device) for k, v in inputs.items()}
+
+#     forced_bos_token_id = nllb_tokenizer.lang_code_to_id[NLLB_LANG_MAP[tgt]]
+
+#     with torch.no_grad():
+#         outputs = nllb_model.generate(
+#             **inputs,
+#             forced_bos_token_id=forced_bos_token_id,
+#             num_beams=5,
+#             max_length=256,
+#         )
+
+#     return nllb_tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+
+# # --------------------------------------------------
+# # XTTS (REAL INDIC TTS)
+# # --------------------------------------------------
+# def load_tts_model():
+#     global tts_model
+#     logger.info("Loading XTTS v2...")
+
+#     tts_model = TTS(
+#         model_name="tts_models/multilingual/multi-dataset/xtts_v2",
+#         gpu=device == "cuda"
+#     )
+
+#     logger.info("XTTS ready")
+
+
+# def generate_speech(text, lang, out_path):
+#     if lang not in XTTS_LANGS:
+#         raise ValueError("XTTS does not support this language")
+
+#     tts_model.tts_to_file(
+#         text=text,
+#         language=lang,
+#         file_path=out_path
+#     )
+
+# # --------------------------------------------------
+# # Routes
+# # --------------------------------------------------
+# @app.route("/translate", methods=["POST"])
+# def translate_api():
+#     try:
+#         start = datetime.now()
+
+#         if "file" not in request.files:
+#             return jsonify({"error": "No file provided"}), 400
+
+#         file = request.files["file"]
+#         src = request.form.get("input_lang")
+#         tgt = request.form.get("target_lang")
+
+#         if not file or not allowed_file(file.filename):
+#             return jsonify({"error": "Invalid file"}), 400
+
+#         if src not in NLLB_LANG_MAP or tgt not in NLLB_LANG_MAP:
+#             return jsonify({"error": "Unsupported language"}), 400
+
+#         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#         upload = os.path.join(
+#             UPLOAD_FOLDER, f"{stamp}_{secure_filename(file.filename)}"
+#         )
+#         file.save(upload)
+
+#         audio = convert_to_wav_mono_16k(upload)
+
+#         recognized = transcribe_audio(audio)
+#         translated = translate_text(recognized, src, tgt)
+
+#         out_audio = os.path.join(GENERATED_AUDIO_FOLDER, f"{stamp}_out.wav")
+#         generate_speech(translated, tgt, out_audio)
+
+#         return jsonify({
+#             "recognized_text": recognized,
+#             "translated_text": translated,
+#             "audio_url": f"/audio/{os.path.basename(out_audio)}",
+#             "processing_time": (datetime.now() - start).total_seconds(),
+#         })
+
+#     except Exception:
+#         logger.error(traceback.format_exc())
+#         return jsonify({"error": "Internal error"}), 500
+
+
+# @app.route("/audio/<name>")
+# def serve_audio(name):
+#     return send_file(
+#         os.path.join(GENERATED_AUDIO_FOLDER, name),
+#         mimetype="audio/wav"
+#     )
+
+# # --------------------------------------------------
+# # Main
+# # --------------------------------------------------
+# if __name__ == "__main__":
+#     load_whisper_model()
+#     load_nllb_model()
+#     load_tts_model()
+#     app.run(host="0.0.0.0", port=8000, debug=False)

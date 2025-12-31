@@ -11,3 +11,18 @@ indic-transliteration==2.3.60
 soundfile==0.13.1
 numpy==1.26.4
 tqdm==4.67.1
+
+
+
+#For best Model Performance, use the following versions:
+
+# torch>=2.1.0
+# transformers>=4.40.0
+# sentencepiece
+# soundfile
+# numpy
+# tqdm
+# Flask
+# werkzeug
+# TTS==0.22.0
+# ffmpeg (system installed)
